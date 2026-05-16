@@ -1,0 +1,91 @@
+name: Setup Violet
+description: Install the Violet compiler on a GitHub Actions runner.
+branding:
+  icon: download
+  color: purple
+
+inputs:
+  violet-version:
+    description: 'Git ref of codeberg.org/dannypsnl/violet (branch, tag, or commit SHA).'
+    required: false
+    default: main
+  cache:
+    description: 'Cache the built violet binary keyed on resolved SHA.'
+    required: false
+    default: 'true'
+
+outputs:
+  violet-version:
+    description: 'Resolved commit SHA of the Violet build.'
+    value: ${{ steps.resolve.outputs.violet-version }}
+  cache-hit:
+    description: 'true when the built binary was restored from cache.'
+    value: ${{ steps.cache.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up OCaml
+      uses: ocaml/setup-ocaml@v3
+      with:
+        ocaml-compiler: 5.1.1
+
+    - name: Clone Violet from Codeberg
+      shell: bash
+      env:
+        VERSION: ${{ inputs.violet-version }}
+      run: |
+        set -euo pipefail
+        SRC="$RUNNER_TEMP/violet-src"
+        if git clone --depth 1 --branch "$VERSION" \
+              https://codeberg.org/dannypsnl/violet.git "$SRC" 2>/dev/null; then
+          echo "Shallow-cloned ref $VERSION"
+        else
+          echo "Shallow clone failed (probably a SHA); falling back to full clone"
+          git clone https://codeberg.org/dannypsnl/violet.git "$SRC"
+          git -C "$SRC" checkout "$VERSION"
+        fi
+
+    - name: Resolve build SHA
+      id: resolve
+      shell: bash
+      run: |
+        set -euo pipefail
+        SHA=$(git -C "$RUNNER_TEMP/violet-src" rev-parse HEAD)
+        echo "violet-version=$SHA" >> "$GITHUB_OUTPUT"
+        echo "Resolved SHA: $SHA"
+
+    - name: Restore cached binary
+      id: cache
+      if: inputs.cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ~/.violet/bin/violet
+        key: violet-${{ runner.os }}-${{ steps.resolve.outputs.violet-version }}
+
+    - name: Build Violet via opam + dune
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$RUNNER_TEMP/violet-src"
+        opam install . --yes --deps-only --working-dir
+        opam exec -- dune build --release
+
+    - name: Install binary onto PATH
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$HOME/.violet/bin"
+        if [[ "${{ steps.cache.outputs.cache-hit }}" != "true" ]]; then
+          cp "$RUNNER_TEMP/violet-src/_build/install/default/bin/violet" \
+             "$HOME/.violet/bin/violet"
+        fi
+        echo "$HOME/.violet/bin" >> "$GITHUB_PATH"
+
+    - name: Smoke test
+      shell: bash
+      run: |
+        set -euo pipefail
+        export PATH="$HOME/.violet/bin:$PATH"
+        violet --help

@@ -1,0 +1,74 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test-default:
+    name: default inputs (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - id: setup
+        uses: ./
+      - name: smoke test
+        run: violet --help
+      - name: assert output is a SHA
+        shell: bash
+        run: |
+          sha="${{ steps.setup.outputs.violet-version }}"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "expected 40-char SHA, got: $sha"; exit 1; }
+
+  test-pinned-sha:
+    name: pinned SHA (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - id: setup
+        uses: ./
+        with:
+          violet-version: cbb2e362588a6b19709f3ab46f79a719fc566b5d
+      - name: assert resolved SHA matches input
+        shell: bash
+        run: |
+          got="${{ steps.setup.outputs.violet-version }}"
+          want="cbb2e362588a6b19709f3ab46f79a719fc566b5d"
+          [[ "$got" == "$want" ]] || { echo "expected $want, got: $got"; exit 1; }
+
+  test-cache-warm:
+    name: cache cold + warm (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - id: cold
+        uses: ./
+        with:
+          violet-version: cbb2e362588a6b19709f3ab46f79a719fc566b5d
+      - name: clear PATH addition to force re-run of action
+        shell: bash
+        run: rm -f "$HOME/.violet/bin/violet"
+      - id: warm
+        uses: ./
+        with:
+          violet-version: cbb2e362588a6b19709f3ab46f79a719fc566b5d
+      - name: assert warm run hit the cache
+        shell: bash
+        run: |
+          if [[ "${{ steps.warm.outputs.cache-hit }}" != "true" ]]; then
+            echo "expected cache-hit=true on warm run, got: ${{ steps.warm.outputs.cache-hit }}"
+            exit 1
+          fi
