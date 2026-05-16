@@ -28,7 +28,7 @@ runs:
     - name: Set up OCaml
       uses: ocaml/setup-ocaml@v3
       with:
-        ocaml-compiler: 5.1.1
+        ocaml-compiler: "5.3"
 
     - name: Clone Violet from Codeberg
       shell: bash
