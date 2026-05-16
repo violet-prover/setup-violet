@@ -66,6 +66,8 @@ runs:
     - name: Build Violet via opam + dune
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
+      env:
+        OPAMSWITCH: ${{ github.workspace }}
       run: |
         set -euo pipefail
         cd "$RUNNER_TEMP/violet-src"
