@@ -136,13 +136,13 @@ runs:
       run: |
         set -euo pipefail
         SRC="$RUNNER_TEMP/violet-src"
-        if git clone --depth 1 --branch "$REF" \
-              https://codeberg.org/dannypsnl/violet.git "$SRC" 2>/dev/null; then
-          echo "Shallow-cloned ref $REF"
-        else
-          echo "Shallow clone failed (probably a SHA); falling back to full clone"
-          git clone https://codeberg.org/dannypsnl/violet.git "$SRC"
+        URL=https://codeberg.org/dannypsnl/violet.git
+        rm -rf "$SRC"
+        if [[ "$REF" =~ ^[0-9a-f]{7,40}$ ]]; then
+          git clone "$URL" "$SRC"
           git -C "$SRC" checkout "$REF"
+        else
+          git clone --depth 1 --branch "$REF" "$URL" "$SRC"
         fi
 
     - name: Build Violet via opam + dune
