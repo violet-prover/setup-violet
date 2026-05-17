@@ -37,12 +37,12 @@ jobs:
       - id: setup
         uses: ./
         with:
-          violet-version: cbb2e362588a6b19709f3ab46f79a719fc566b5d
+          violet-version: 8928373db4981175855a4a2fb3a471b5c32c9c39
       - name: assert resolved SHA matches input
         shell: bash
         run: |
           got="${{ steps.setup.outputs.violet-version }}"
-          want="cbb2e362588a6b19709f3ab46f79a719fc566b5d"
+          want="8928373db4981175855a4a2fb3a471b5c32c9c39"
           [[ "$got" == "$want" ]] || { echo "expected $want, got: $got"; exit 1; }
 
   test-cache-warm:
@@ -57,14 +57,14 @@ jobs:
       - id: cold
         uses: ./
         with:
-          violet-version: cbb2e362588a6b19709f3ab46f79a719fc566b5d
+          violet-version: 8928373db4981175855a4a2fb3a471b5c32c9c39
       - name: clear PATH addition to force re-run of action
         shell: bash
         run: rm -f "$HOME/.violet/bin/violet"
       - id: warm
         uses: ./
         with:
-          violet-version: cbb2e362588a6b19709f3ab46f79a719fc566b5d
+          violet-version: 8928373db4981175855a4a2fb3a471b5c32c9c39
       - name: assert warm run hit the cache
         shell: bash
         run: |
