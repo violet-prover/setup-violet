@@ -6,54 +6,99 @@ branding:
 
 inputs:
   violet-version:
-    description: 'Git ref of codeberg.org/dannypsnl/violet (branch, tag, or commit SHA).'
+    description: |
+      Version to install. Accepted values:
+        - "stable": download the prebuilt binary from the latest GitHub release.
+        - "vX.Y.Z" (e.g. "v0.1.0"): download the prebuilt binary from that release.
+        - "current": build from the latest source on the main branch.
+        - Any other branch name or commit SHA: build from source at that ref.
+      If a prebuilt binary is requested but not available for this platform,
+      the action falls back to building from source at the tag's commit.
     required: false
-    default: main
+    default: stable
   cache:
-    description: 'Cache the built violet binary keyed on resolved SHA.'
+    description: 'Cache the violet binary keyed on resolved SHA.'
     required: false
     default: 'true'
 
 outputs:
   violet-version:
-    description: 'Resolved commit SHA of the Violet build.'
+    description: 'Resolved commit SHA of the installed Violet build.'
     value: ${{ steps.resolve.outputs.violet-version }}
+  source:
+    description: '"prebuilt" if a release asset was used, otherwise "source".'
+    value: ${{ steps.resolve.outputs.source }}
   cache-hit:
-    description: 'true when the built binary was restored from cache.'
+    description: 'true when the binary was restored from cache.'
     value: ${{ steps.cache.outputs.cache-hit }}
 
 runs:
   using: composite
   steps:
-    - name: Set up OCaml
-      uses: ocaml/setup-ocaml@v3
-      with:
-        ocaml-compiler: "5.3"
-
-    - name: Clone Violet from Codeberg
+    - name: Resolve version and install mode
+      id: resolve
       shell: bash
       env:
         VERSION: ${{ inputs.violet-version }}
+        GH_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
-        SRC="$RUNNER_TEMP/violet-src"
-        if git clone --depth 1 --branch "$VERSION" \
-              https://codeberg.org/dannypsnl/violet.git "$SRC" 2>/dev/null; then
-          echo "Shallow-cloned ref $VERSION"
-        else
-          echo "Shallow clone failed (probably a SHA); falling back to full clone"
-          git clone https://codeberg.org/dannypsnl/violet.git "$SRC"
-          git -C "$SRC" checkout "$VERSION"
+
+        case "$(uname -s)-$(uname -m)" in
+          Linux-x86_64)   ASSET="violet-linux-x86_64" ;;
+          Darwin-arm64)   ASSET="violet-macos-arm64" ;;
+          *)              ASSET="" ;;
+        esac
+
+        case "$VERSION" in
+          current)
+            MODE=source
+            REF=main
+            TAG=""
+            ;;
+          stable)
+            TAG=$(curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              https://api.github.com/repos/violet-prover/violet/releases/latest \
+              | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' \
+              | head -n1)
+            if [[ -z "$TAG" ]]; then
+              echo "Could not resolve latest release tag" >&2
+              exit 1
+            fi
+            REF="$TAG"
+            MODE=$([[ -n "$ASSET" ]] && echo prebuilt || echo source)
+            ;;
+          v*)
+            TAG="$VERSION"
+            REF="$TAG"
+            MODE=$([[ -n "$ASSET" ]] && echo prebuilt || echo source)
+            ;;
+          *)
+            MODE=source
+            REF="$VERSION"
+            TAG=""
+            ;;
+        esac
+
+        # Resolve REF -> commit SHA via codeberg (canonical source).
+        SHA=$(git ls-remote https://codeberg.org/dannypsnl/violet.git "$REF" \
+              | awk 'NR==1{print $1}')
+        if [[ -z "$SHA" ]]; then
+          # REF might already be a SHA.
+          SHA="$REF"
         fi
 
-    - name: Resolve build SHA
-      id: resolve
-      shell: bash
-      run: |
-        set -euo pipefail
-        SHA=$(git -C "$RUNNER_TEMP/violet-src" rev-parse HEAD)
-        echo "violet-version=$SHA" >> "$GITHUB_OUTPUT"
-        echo "Resolved SHA: $SHA"
+        {
+          echo "violet-version=$SHA"
+          echo "source=$MODE"
+          echo "tag=$TAG"
+          echo "ref=$REF"
+          echo "asset=$ASSET"
+        } >> "$GITHUB_OUTPUT"
+
+        echo "Mode: $MODE, ref: $REF, sha: $SHA, asset: ${ASSET:-<none>}"
 
     - name: Restore cached binary
       id: cache
@@ -61,10 +106,47 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.violet/bin/violet
-        key: violet-${{ runner.os }}-${{ steps.resolve.outputs.violet-version }}
+        key: violet-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.violet-version }}
+
+    - name: Download prebuilt binary
+      if: steps.cache.outputs.cache-hit != 'true' && steps.resolve.outputs.source == 'prebuilt'
+      shell: bash
+      env:
+        TAG: ${{ steps.resolve.outputs.tag }}
+        ASSET: ${{ steps.resolve.outputs.asset }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$HOME/.violet/bin"
+        URL="https://github.com/violet-prover/violet/releases/download/${TAG}/${ASSET}"
+        echo "Downloading $URL"
+        curl -fsSL "$URL" -o "$HOME/.violet/bin/violet"
+        chmod +x "$HOME/.violet/bin/violet"
+
+    - name: Set up OCaml
+      if: steps.cache.outputs.cache-hit != 'true' && steps.resolve.outputs.source == 'source'
+      uses: ocaml/setup-ocaml@v3
+      with:
+        ocaml-compiler: "5.3"
+
+    - name: Clone Violet source
+      if: steps.cache.outputs.cache-hit != 'true' && steps.resolve.outputs.source == 'source'
+      shell: bash
+      env:
+        REF: ${{ steps.resolve.outputs.ref }}
+      run: |
+        set -euo pipefail
+        SRC="$RUNNER_TEMP/violet-src"
+        if git clone --depth 1 --branch "$REF" \
+              https://codeberg.org/dannypsnl/violet.git "$SRC" 2>/dev/null; then
+          echo "Shallow-cloned ref $REF"
+        else
+          echo "Shallow clone failed (probably a SHA); falling back to full clone"
+          git clone https://codeberg.org/dannypsnl/violet.git "$SRC"
+          git -C "$SRC" checkout "$REF"
+        fi
 
     - name: Build Violet via opam + dune
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: steps.cache.outputs.cache-hit != 'true' && steps.resolve.outputs.source == 'source'
       shell: bash
       env:
         OPAMSWITCH: ${{ github.workspace }}
@@ -73,16 +155,13 @@ runs:
         cd "$RUNNER_TEMP/violet-src"
         opam install . --yes --deps-only --working-dir
         opam exec -- dune build --release
+        mkdir -p "$HOME/.violet/bin"
+        cp _build/install/default/bin/violet "$HOME/.violet/bin/violet"
 
-    - name: Install binary onto PATH
+    - name: Add to PATH
       shell: bash
       run: |
         set -euo pipefail
-        mkdir -p "$HOME/.violet/bin"
-        if [[ "${{ steps.cache.outputs.cache-hit }}" != "true" ]]; then
-          cp "$RUNNER_TEMP/violet-src/_build/install/default/bin/violet" \
-             "$HOME/.violet/bin/violet"
-        fi
         echo "$HOME/.violet/bin" >> "$GITHUB_PATH"
 
     - name: Smoke test
